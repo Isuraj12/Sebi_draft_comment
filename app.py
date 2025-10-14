@@ -8,8 +8,8 @@ import google.generativeai as genai
 import numpy as np
 
 # --- Configuration ---
-genai.configure(api_key = "AIzaSyBfODz4dMqxnSNJBojgEAL38SyUXNCv3vs")
-#genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 # Initialize EasyOCR reader
