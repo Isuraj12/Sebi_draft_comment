@@ -1,0 +1,118 @@
+import streamlit as st
+import fitz  # PyMuPDF
+import easyocr
+from PIL import Image
+import io
+import re
+import google.generativeai as genai
+import numpy as np
+
+# --- Configuration ---
+genai.configure(api_key = "AIzaSyBfODz4dMqxnSNJBojgEAL38SyUXNCv3vs")
+#genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-2.5-flash")
+
+# Initialize EasyOCR reader
+ocr_reader = easyocr.Reader(['en'], gpu=False)
+
+# --- Functions ---
+
+def extract_text_from_pdf(pdf_bytes, max_pages=20):
+    """
+    Extracts text from a PDF, using OCR if direct text extraction is minimal.
+    Limits OCR to first `max_pages` for memory efficiency.
+    """
+    all_text = ""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page_num in range(min(doc.page_count, max_pages)):
+            page = doc.load_page(page_num)
+            text = page.get_text("text")
+
+            # Use OCR if text is too small
+            if len(text.strip()) < 500 and not text.strip().lower().startswith("s=3"):
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))  # downscale for memory
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                ocr_result = ocr_reader.readtext(np.array(img))
+                ocr_text = " ".join([t[1] for t in ocr_result])
+                all_text += ocr_text + "\n"
+            else:
+                all_text += text + "\n"
+        doc.close()
+    except Exception as e:
+        st.error(f"Error processing PDF: {e}")
+        return None
+    return all_text
+
+def clean_extracted_text(text):
+    """Basic cleaning for LLM input."""
+    if not text:
+        return ""
+    text = re.sub(r'(S=3|S31) प्रतिभूति और विनिमय बोर्ड\nSecurities and Exchange Board of India', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'Page \d+ of \d+', '', text)
+    text = re.sub(r'Issued on: [A-Za-z]+ \d{1,2}, \d{4}', '', text)
+    text = re.sub(r'Yours faithfully,', '', text)
+    text = re.sub(r'\*{3,}', '', text)
+    text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
+    return text.strip()
+
+def get_llm_analysis(document_text):
+    """Sends the cleaned document text to Gemini for structured analysis."""
+    if not document_text:
+        return "No text extracted from PDF for analysis."
+
+    prompt = f"""
+    Analyze the following official document (likely a consultation paper or draft circular from SEBI - Securities and Exchange Board of India).
+
+    Please provide a concise summary in the following structure, identifying the key sections:
+
+    ### Background & Objective
+    [Summarize the background and the main objectives of the document. Keep it factual and directly based on the document's content.]
+
+    ### Key Provisions/Proposals
+    [List and briefly explain the main proposals or key provisions outlined in the document. Use bullet points or numbered lists if appropriate for clarity. Focus on the core changes or requirements.]
+
+    ### Our Opinion
+    [Provide an informed opinion or analysis of the document's proposals. Discuss potential positive implications, benefits, or significance for the stakeholders (e.g., investors, market participants, regulatory transparency). This should be a synthesized perspective based on the document's intent and common regulatory goals.]
+
+    ---
+    Document Text:
+    {document_text}
+    ---
+
+    Ensure the output strictly adheres to the requested three main headings.
+    """
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error communicating with Gemini API: {e}"
+
+# --- Streamlit UI ---
+
+st.set_page_config(page_title="SEBI PDF Analyzer", layout="centered")
+st.title("SEBI Circular / Consultation Paper Analyzer")
+st.markdown("Upload an official SEBI document (PDF) to extract, analyze, and provide comments.")
+
+uploaded_pdf = st.file_uploader("Upload PDF file", type=["pdf"])
+
+if uploaded_pdf:
+    pdf_bytes = uploaded_pdf.read()  # Read once
+
+    if "extracted_text" not in st.session_state:
+        with st.spinner("🔍 Extracting text from PDF..."):
+            st.session_state.extracted_text = extract_text_from_pdf(pdf_bytes)
+
+    if st.session_state.extracted_text:
+        cleaned_text = clean_extracted_text(st.session_state.extracted_text)
+        st.success("Text extraction complete!")
+
+        if st.button("Analyze with AI"):
+            with st.spinner("Generating structured analysis..."):
+                llm_analysis = get_llm_analysis(cleaned_text)
+            st.markdown("## AI Analysis")
+            st.markdown(llm_analysis)
+    else:
+        st.error("Failed to extract text from the uploaded PDF.")
+else:
+    st.info("Please upload a PDF to begin analysis.")
